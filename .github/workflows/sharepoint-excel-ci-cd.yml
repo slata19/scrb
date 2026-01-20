@@ -1,0 +1,135 @@
+name: SharePoint Excel CI-CD
+
+on:
+  push:
+    branches:
+      - main
+      - 'release/test-*'
+      - 'release/prod-*'
+  workflow_dispatch:
+
+jobs:
+  build-and-validate:
+    name: Download & Validate Excel
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Excel from SharePoint
+        shell: pwsh
+        env:
+          SP_SITE_URL: ${{ secrets.SP_SITE_URL }}
+          SP_FILE_PATH: ${{ secrets.SP_FILE_PATH }}
+          SP_USERNAME: ${{ secrets.SP_USERNAME }}
+          SP_PASSWORD: ${{ secrets.SP_PASSWORD }}
+        run: |
+          pwsh ./scripts/download-excel.ps1 `
+            -SiteUrl "$Env:SP_SITE_URL" `
+            -FileServerRelativeUrl "$Env:SP_FILE_PATH" `
+            -OutputPath "./downloaded" `
+            -Username "$Env:SP_USERNAME" `
+            -Password "$Env:SP_PASSWORD"
+
+      - name: Validate macro-heavy Excel
+        shell: pwsh
+        run: |
+          pwsh ./scripts/validate-excel.ps1 `
+            -FilePath "./downloaded/Workbook.xlsm"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: excel-artifact
+          path: downloaded/Workbook.xlsm
+
+  deploy-dev:
+    name: Deploy to Dev
+    runs-on: windows-latest
+    needs: build-and-validate
+    if: github.ref == 'refs/heads/main'
+    environment: dev
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: excel-artifact
+
+      - name: Upload to Dev library
+        shell: pwsh
+        env:
+          SP_SITE_URL: ${{ secrets.SP_SITE_URL }}
+          SP_DOC_LIB_DEV: ${{ secrets.SP_DOC_LIB_DEV }}
+          SP_USERNAME: ${{ secrets.SP_USERNAME }}
+          SP_PASSWORD: ${{ secrets.SP_PASSWORD }}
+        run: |
+          pwsh ./scripts/upload-excel.ps1 `
+            -SiteUrl "$Env:SP_SITE_URL" `
+            -LibraryPath "$Env:SP_DOC_LIB_DEV" `
+            -LocalFile "./Workbook.xlsm" `
+            -Username "$Env:SP_USERNAME" `
+            -Password "$Env:SP_PASSWORD"
+
+  deploy-test:
+    name: Deploy to Test
+    runs-on: windows-latest
+    needs: build-and-validate
+    if: startsWith(github.ref, 'refs/heads/release/test-')
+    environment: test
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: excel-artifact
+
+      - name: Upload to Test library
+        shell: pwsh
+        env:
+          SP_SITE_URL: ${{ secrets.SP_SITE_URL }}
+          SP_DOC_LIB_TEST: ${{ secrets.SP_DOC_LIB_TEST }}
+          SP_USERNAME: ${{ secrets.SP_USERNAME }}
+          SP_PASSWORD: ${{ secrets.SP_PASSWORD }}
+        run: |
+          pwsh ./scripts/upload-excel.ps1 `
+            -SiteUrl "$Env:SP_SITE_URL" `
+            -LibraryPath "$Env:SP_DOC_LIB_TEST" `
+            -LocalFile "./Workbook.xlsm" `
+            -Username "$Env:SP_USERNAME" `
+            -Password "$Env:SP_PASSWORD"
+
+  deploy-prod:
+    name: Deploy to Prod
+    runs-on: windows-latest
+    needs: build-and-validate
+    if: startsWith(github.ref, 'refs/heads/release/prod-')
+    environment: production
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: excel-artifact
+
+      - name: Upload to Prod library
+        shell: pwsh
+        env:
+          SP_SITE_URL: ${{ secrets.SP_SITE_URL }}
+          SP_DOC_LIB_PROD: ${{ secrets.SP_DOC_LIB_PROD }}
+          SP_USERNAME: ${{ secrets.SP_USERNAME }}
+          SP_PASSWORD: ${{ secrets.SP_PASSWORD }}
+        run: |
+          pwsh ./scripts/upload-excel.ps1 `
+            -SiteUrl "$Env:SP_SITE_URL" `
+            -LibraryPath "$Env:SP_DOC_LIB_PROD" `
+            -LocalFile "./Workbook.xlsm" `
+            -Username "$Env:SP_USERNAME" `
+            -Password "$Env:SP_PASSWORD"
+
+      - name: Notify Teams
+        if: always()
+        shell: pwsh
+        env:
+          TEAMS_WEBHOOK: ${{ secrets.TEAMS_WEBHOOK }}
+        run: |
+          pwsh ./scripts/notify-teams.ps1 `
+            -WebhookUrl "$Env:TEAMS_WEBHOOK" `
+            -Message "Prod deployment completed for Workbook.xlsm on branch ${{ github.ref }}"
